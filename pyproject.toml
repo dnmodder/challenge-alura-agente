@@ -1,7 +1,8 @@
 [project]
 name = "challenge-alura-agente"
 version = "0.1.0"
-description = "Agente RAG ultraligero para e-commerce con Gemini"
+description = "Agente RAG de Información Empresarial"
+
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
