@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import csv
 import os
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 
+import docx
 import faiss
 import gradio as gr
 import numpy as np
+import pandas as pd
+import pypdf
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -34,15 +38,48 @@ class Chunk:
     contenido: str
 
 
+def extraer_texto_de_archivo(archivo: Path) -> str:
+    ext = archivo.suffix.lower()
+    if ext in {".md", ".txt"}:
+        return archivo.read_text(encoding="utf-8")
+
+    if ext == ".pdf":
+        reader = pypdf.PdfReader(archivo)
+        paginas = [p.extract_text() or "" for p in reader.pages]
+        return "\n\n".join(paginas)
+
+    if ext == ".docx":
+        doc = docx.Document(archivo)
+        parrafos = [p.text for p in doc.paragraphs if p.text]
+        return "\n".join(parrafos)
+
+    if ext == ".csv":
+        df = pd.read_csv(archivo)
+        return df.to_string(index=False)
+
+    if ext in {".xlsx", ".xls"}:
+        df = pd.read_excel(archivo)
+        return df.to_string(index=False)
+
+    return ""
+
+
 def cargar_documentos(directorio_datos: Path = Path("datos")) -> list[Documento]:
     documentos: list[Documento] = []
     if not directorio_datos.exists():
         return documentos
 
+    extensiones_validas = {".md", ".txt", ".pdf", ".docx", ".csv", ".xlsx", ".xls"}
     for archivo in directorio_datos.glob("*"):
-        if archivo.suffix.lower() in {".md", ".txt"}:
-            contenido = archivo.read_text(encoding="utf-8")
-            documentos.append(Documento(ruta_archivo=archivo, contenido=contenido))
+        if archivo.suffix.lower() in extensiones_validas:
+            try:
+                contenido = extraer_texto_de_archivo(archivo)
+                if contenido.strip():
+                    documentos.append(
+                        Documento(ruta_archivo=archivo, contenido=contenido)
+                    )
+            except Exception as error:
+                print(f"Error al leer el archivo {archivo.name}: {error}")
     return documentos
 
 
