@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import os
 from collections.abc import Generator
 from dataclasses import dataclass
@@ -49,7 +48,7 @@ def extraer_texto_de_archivo(archivo: Path) -> str:
         return "\n\n".join(paginas)
 
     if ext == ".docx":
-        doc = docx.Document(archivo)
+        doc = docx.Document(str(archivo))
         parrafos = [p.text for p in doc.paragraphs if p.text]
         return "\n".join(parrafos)
 
@@ -78,7 +77,12 @@ def cargar_documentos(directorio_datos: Path = Path("datos")) -> list[Documento]
                     documentos.append(
                         Documento(ruta_archivo=archivo, contenido=contenido)
                     )
-            except Exception as error:
+            except (
+                OSError,
+                ValueError,
+                RuntimeError,
+                pd.errors.EmptyDataError,
+            ) as error:
                 print(f"Error al leer el archivo {archivo.name}: {error}")
     return documentos
 
