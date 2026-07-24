@@ -94,18 +94,26 @@ def crear_chunks(documentos: list[Documento]) -> list[Chunk]:
         nombre_doc = doc.ruta_archivo.stem.replace("_", " ").title()
         lineas = texto.split("\n")
 
-        encabezado_actual = nombre_doc
-        buffer_texto = []
+        pila_encabezados: list[str] = []
+        buffer_texto: list[str] = []
         posicion = 0
 
         for linea in lineas:
-            if linea.startswith("#"):
-                encabezado_actual = f"{nombre_doc} > {linea.lstrip('#').strip()}"
+            linea_limpia = linea.strip()
+            if linea_limpia.startswith("#"):
+                nivel = len(linea_limpia) - len(linea_limpia.lstrip("#"))
+                titulo = linea_limpia.lstrip("#").strip()
+                if titulo and 1 <= nivel <= 6:
+                    pila_encabezados = pila_encabezados[: nivel - 1]
+                    pila_encabezados.append(titulo)
+
             buffer_texto.append(linea)
             bloque = "\n".join(buffer_texto)
 
             if len(bloque) >= TAMANO_CHUNK:
-                contenido_chunk = f"[{encabezado_actual}]\n{bloque}"
+                partes = [nombre_doc] + pila_encabezados
+                encabezado = " > ".join(partes)
+                contenido_chunk = f"[{encabezado}]\n{bloque}"
                 chunks.append(
                     Chunk(
                         id_documento=doc.ruta_archivo.name,
@@ -117,8 +125,10 @@ def crear_chunks(documentos: list[Documento]) -> list[Chunk]:
                 buffer_texto = buffer_texto[-3:]
 
         if buffer_texto:
+            partes = [nombre_doc] + pila_encabezados
+            encabezado = " > ".join(partes)
             bloque = "\n".join(buffer_texto)
-            contenido_chunk = f"[{encabezado_actual}]\n{bloque}"
+            contenido_chunk = f"[{encabezado}]\n{bloque}"
             chunks.append(
                 Chunk(
                     id_documento=doc.ruta_archivo.name,
