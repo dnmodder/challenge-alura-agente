@@ -1,0 +1,13 @@
+[project]
+name = "challenge-alura-agente"
+version = "0.1.0"
+description = "Agente RAG ultraligero para e-commerce con Gemini"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "faiss-cpu>=1.9.0",
+    "google-genai>=1.0.0",
+    "gradio>=5.0.0",
+    "numpy>=1.26.0",
+    "python-dotenv>=1.0.0",
+]
