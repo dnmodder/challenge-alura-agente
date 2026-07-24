@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,14 +15,15 @@ import pypdf
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
 CLAVE_API = os.getenv("GEMINI_API_KEY")
-MODELO_EMBEDDING = "gemini-embedding-2"
+TOKEN_HF = os.getenv("HF_TOKEN")
+MODELO_EMBEDDING_LOCAL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 MODELO_LLM = "gemini-3.5-flash-lite"
 TOP_K = 3
-TAMANO_CHUNK = 1000
 
 
 @dataclass
@@ -37,6 +39,62 @@ class Chunk:
     contenido: str
 
 
+def procesar_csv(archivo: Path) -> list[Chunk]:
+    chunks_csv: list[Chunk] = []
+    nombre_doc = archivo.stem.replace("_", " ").title()
+
+    try:
+        df = (
+            pd.read_csv(
+                archivo,
+                sep=None,
+                engine="python",
+                encoding="utf-8-sig",
+                on_bad_lines="skip",
+            )
+            .dropna(how="all", axis=0)
+            .dropna(how="all", axis=1)
+        )
+    except (OSError, ValueError, RuntimeError, pd.errors.EmptyDataError) as error:
+        print(f"⚠️ Error al leer el archivo CSV {archivo.name}: {error}")
+        return chunks_csv
+
+    tamanio_bloque_filas = 20
+    registros = df.to_dict(orient="records")
+    total_registros = len(registros)
+
+    for inicio in range(0, total_registros, tamanio_bloque_filas):
+        fin = min(inicio + tamanio_bloque_filas, total_registros)
+        sub_registros = registros[inicio:fin]
+
+        lineas_bloque = []
+        for reg in sub_registros:
+            detalles = ", ".join(
+                [
+                    f"{col}: {val}"
+                    for col, val in reg.items()
+                    if pd.notna(val) and str(val).strip() != ""
+                ]
+            )
+            if detalles:
+                lineas_bloque.append(f"• {detalles}")
+
+        if lineas_bloque:
+            contenido = (
+                f"[{nombre_doc} (Registros {inicio + 1}-{fin} de {total_registros})]\n"
+                + "\n".join(lineas_bloque)
+            )
+            chunks_csv.append(
+                Chunk(
+                    id_documento=archivo.name,
+                    indice=len(chunks_csv),
+                    contenido=contenido,
+                )
+            )
+
+    return chunks_csv
+
+
 def extraer_texto_de_archivo(archivo: Path) -> str:
     ext = archivo.suffix.lower()
     if ext in {".md", ".txt"}:
@@ -47,36 +105,37 @@ def extraer_texto_de_archivo(archivo: Path) -> str:
         paginas = [p.extract_text() or "" for p in reader.pages]
         return "\n\n".join(paginas)
 
-    if ext == ".docx":
+    if ext in {".docx", ".doc"}:
         doc = docx.Document(str(archivo))
         parrafos = [p.text for p in doc.paragraphs if p.text]
         return "\n".join(parrafos)
 
-    if ext == ".csv":
-        df = pd.read_csv(archivo)
-        return df.to_string(index=False)
-
-    if ext in {".xlsx", ".xls"}:
-        df = pd.read_excel(archivo)
-        return df.to_string(index=False)
-
     return ""
 
 
-def cargar_documentos(directorio_datos: Path = Path("datos")) -> list[Documento]:
+def cargar_documentos(
+    directorio_datos: Path = Path("datos"),
+) -> tuple[list[Documento], list[Chunk]]:
     documentos: list[Documento] = []
-    if not directorio_datos.exists():
-        return documentos
+    chunks_directos: list[Chunk] = []
 
-    extensiones_validas = {".md", ".txt", ".pdf", ".docx", ".csv", ".xlsx", ".xls"}
+    if not directorio_datos.exists():
+        return documentos, chunks_directos
+
+    extensiones_validas = {".md", ".txt", ".pdf", ".docx", ".doc", ".csv"}
     for archivo in directorio_datos.glob("*"):
-        if archivo.suffix.lower() in extensiones_validas:
+        ext = archivo.suffix.lower()
+        if ext in extensiones_validas:
             try:
-                contenido = extraer_texto_de_archivo(archivo)
-                if contenido.strip():
-                    documentos.append(
-                        Documento(ruta_archivo=archivo, contenido=contenido)
-                    )
+                if ext == ".csv":
+                    chunks_csv = procesar_csv(archivo)
+                    chunks_directos.extend(chunks_csv)
+                else:
+                    contenido = extraer_texto_de_archivo(archivo)
+                    if contenido.strip():
+                        documentos.append(
+                            Documento(ruta_archivo=archivo, contenido=contenido)
+                        )
             except (
                 OSError,
                 ValueError,
@@ -84,36 +143,42 @@ def cargar_documentos(directorio_datos: Path = Path("datos")) -> list[Documento]
                 pd.errors.EmptyDataError,
             ) as error:
                 print(f"Error al leer el archivo {archivo.name}: {error}")
-    return documentos
+
+    return documentos, chunks_directos
 
 
 def crear_chunks(documentos: list[Documento]) -> list[Chunk]:
     chunks: list[Chunk] = []
+    tamano_bloque = 1500
+    solapamiento = 200
+
     for doc in documentos:
-        texto = doc.contenido
+        texto = doc.contenido.strip()
+        if not texto:
+            continue
+
         nombre_doc = doc.ruta_archivo.stem.replace("_", " ").title()
-        lineas = texto.split("\n")
 
-        pila_encabezados: list[str] = []
-        buffer_texto: list[str] = []
+        if len(texto) <= tamano_bloque:
+            chunks.append(
+                Chunk(
+                    id_documento=doc.ruta_archivo.name,
+                    indice=0,
+                    contenido=f"[{nombre_doc}]\n{texto}",
+                )
+            )
+            continue
+
         posicion = 0
+        inicio = 0
+        largo_total = len(texto)
 
-        for linea in lineas:
-            linea_limpia = linea.strip()
-            if linea_limpia.startswith("#"):
-                nivel = len(linea_limpia) - len(linea_limpia.lstrip("#"))
-                titulo = linea_limpia.lstrip("#").strip()
-                if titulo and 1 <= nivel <= 6:
-                    pila_encabezados = pila_encabezados[: nivel - 1]
-                    pila_encabezados.append(titulo)
+        while inicio < largo_total:
+            fin = min(inicio + tamano_bloque, largo_total)
+            fragmento = texto[inicio:fin].strip()
 
-            buffer_texto.append(linea)
-            bloque = "\n".join(buffer_texto)
-
-            if len(bloque) >= TAMANO_CHUNK:
-                partes = [nombre_doc] + pila_encabezados
-                encabezado = " > ".join(partes)
-                contenido_chunk = f"[{encabezado}]\n{bloque}"
+            if fragmento:
+                contenido_chunk = f"[{nombre_doc}]\n{fragmento}"
                 chunks.append(
                     Chunk(
                         id_documento=doc.ruta_archivo.name,
@@ -122,72 +187,102 @@ def crear_chunks(documentos: list[Documento]) -> list[Chunk]:
                     )
                 )
                 posicion += 1
-                buffer_texto = buffer_texto[-3:]
 
-        if buffer_texto:
-            partes = [nombre_doc] + pila_encabezados
-            encabezado = " > ".join(partes)
-            bloque = "\n".join(buffer_texto)
-            contenido_chunk = f"[{encabezado}]\n{bloque}"
-            chunks.append(
-                Chunk(
-                    id_documento=doc.ruta_archivo.name,
-                    indice=posicion,
-                    contenido=contenido_chunk,
-                )
-            )
+            if fin >= largo_total:
+                break
+
+            inicio += tamano_bloque - solapamiento
 
     return chunks
 
 
+import unicodedata
+
+
+def normalizar_texto(texto: str) -> str:
+
+    texto_nfkd = unicodedata.normalize("NFKD", texto)
+    return "".join([c for c in texto_nfkd if not unicodedata.combining(c)]).lower()
+
+
 class BuscadorVectorialFAISS:
-    def __init__(self, cliente_gemini: genai.Client) -> None:
-        self.cliente = cliente_gemini
+    def __init__(self) -> None:
+        print(
+            "🧠 Cargando modelo de embeddings 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'..."
+        )
+        token_hf = TOKEN_HF if TOKEN_HF else None
+        self.modelo_embedding = SentenceTransformer(
+            MODELO_EMBEDDING_LOCAL,
+            token=token_hf,
+        )
         self.chunks: list[Chunk] = []
         self.indice_faiss: faiss.IndexFlatL2 | None = None
-        self.dimension = 3072
+        self.dimension = self.modelo_embedding.get_embedding_dimension()
 
     def obtener_embedding(self, texto: str) -> np.ndarray:
-        respuesta = self.cliente.models.embed_content(
-            model=MODELO_EMBEDDING,
-            contents=texto,
+        vector = self.modelo_embedding.encode(
+            texto, convert_to_numpy=True, normalize_embeddings=True
         )
-        if not respuesta.embeddings or len(respuesta.embeddings) == 0:
-            raise ValueError(
-                f"No se pudieron generar embeddings para el texto provisto: {texto[:50]}..."
-            )
-        vector = np.array(respuesta.embeddings[0].values, dtype=np.float32)
-        return vector
+        return np.array(vector, dtype=np.float32)
 
     def indexar_chunks(self, lista_chunks: list[Chunk]) -> None:
         if not lista_chunks:
             return
         self.chunks = lista_chunks
 
-        embeddings_list = []
-        for chk in lista_chunks:
-            v = self.obtener_embedding(chk.contenido)
-            embeddings_list.append(v)
+        print(
+            f"⚡ Indizando {len(lista_chunks)} fragmentos de texto en la base vectorial FAISS..."
+        )
+        textos = [chk.contenido for chk in lista_chunks]
+        matriz_embeddings = self.modelo_embedding.encode(
+            textos,
+            batch_size=32,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=True,
+        ).astype(np.float32)
 
-        matriz_embeddings = np.vstack(embeddings_list).astype(np.float32)
+        faiss.normalize_L2(matriz_embeddings)
+
         self.dimension = matriz_embeddings.shape[1]
-
         self.indice_faiss = faiss.IndexFlatL2(self.dimension)
         self.indice_faiss.add(matriz_embeddings)
+        print("✅ Base vectorial FAISS indizada con éxito.")
 
     def buscar_similares(self, consulta: str, top_k: int = TOP_K) -> list[Chunk]:
         if self.indice_faiss is None or len(self.chunks) == 0:
             return []
 
         vector_consulta = self.obtener_embedding(consulta).reshape(1, -1)
-        _, indices = self.indice_faiss.search(vector_consulta, top_k)
+        faiss.normalize_L2(vector_consulta)
+        _, indices = self.indice_faiss.search(vector_consulta, top_k * 3)
 
-        resultados: list[Chunk] = []
-
+        resultados_vectoriales: list[Chunk] = []
         for i in indices[0]:
             if 0 <= i < len(self.chunks):
-                resultados.append(self.chunks[i])
-        return resultados
+                resultados_vectoriales.append(self.chunks[i])
+
+        palabras_clave = [normalizar_texto(p) for p in consulta.split() if len(p) >= 3]
+        coincidencias_exactas: list[Chunk] = []
+
+        if palabras_clave:
+            for chk in self.chunks:
+                contenido_norm = normalizar_texto(chk.contenido)
+                matches = 0
+                for p in palabras_clave:
+                    pattern = r"\b" + re.escape(p)
+                    if re.search(pattern, contenido_norm):
+                        matches += 1
+
+                if (
+                    matches == len(palabras_clave)
+                    and chk not in coincidencias_exactas
+                    and chk not in resultados_vectoriales
+                ):
+                    coincidencias_exactas.append(chk)
+
+        combinados = coincidencias_exactas + resultados_vectoriales
+        return combinados[:top_k]
 
 
 class AgenteRAG:
@@ -197,12 +292,12 @@ class AgenteRAG:
                 "No se encontró la variable GEMINI_API_KEY en el archivo .env"
             )
         self.cliente = genai.Client(api_key=CLAVE_API)
-        self.buscador = BuscadorVectorialFAISS(self.cliente)
+        self.buscador = BuscadorVectorialFAISS()
         self.inicializar_conocimientos()
 
     def inicializar_conocimientos(self) -> None:
-        docs = cargar_documentos()
-        chunks = crear_chunks(docs)
+        docs, chunks_csv = cargar_documentos()
+        chunks = crear_chunks(docs) + chunks_csv
         self.buscador.indexar_chunks(chunks)
 
     def generar_respuesta_stream(
@@ -286,8 +381,10 @@ def construir_interfaz() -> gr.Blocks:
 
 def main() -> None:
     global agente
+    print("🚀 Inicializando Agente RAG de Información Empresarial...")
     agente = AgenteRAG()
     demo = construir_interfaz()
+    print("🌐 Lanzando servidor web Gradio en http://127.0.0.1:7860 ...")
     demo.launch(server_name="127.0.0.1", server_port=7860)
 
 
