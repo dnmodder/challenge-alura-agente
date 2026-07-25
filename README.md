@@ -1,39 +1,38 @@
-# 🤖 Challenge Agente Alura
+# 🤖 Challenge Agente Alura (LangGraph Edition)
 
-Un agente de inteligencia artificial basado en arquitectura **RAG (Retrieval-Augmented Generation)** diseñado para responder consultas internas de empleados sobre la documentación, políticas y procedimientos corporativos de la empresa.
+Un agente de inteligencia artificial avanzado basado en **LangGraph** y **LangChain** diseñado para responder consultas corporativas combinando **recuperación RAG para documentos no estructurados** (PDF, DOCX, MD, TXT) y **ejecución dinámica de código Pandas para datos estructurados** (CSV, XLSX, XLS).
 
 ---
 
 ## 🏗️ Descripción de la Arquitectura
 
-El sistema está construido siguiendo una arquitectura por capas modular, local y desacoplada:
+El sistema utiliza un **Estado de Grafo (`StateGraph`)** en LangGraph que analiza la intención de la consulta y delega el procesamiento a la herramienta correspondiente:
 
 ```
-[ 📄 Archivos empresariales (datos/) ]
-           │ (.md, .pdf, .docx, .doc, .csv, .txt)
-           ▼
-[ 🧩 Extractor Multiformato y Chunker ] ──> Genera fragmentos contextuales por bloques
-           │
-           ▼
-[ 💻 Local Embeddings (MiniLM-L12 Multilingüe) ] ──> Vectorización e indización semántica local
-           │
-           ▼
-[ ⚡ Base Vectorial FAISS (IndexFlatL2) ] ──> Almacenamiento e indización en memoria local
-           │
-           ▼ (Consulta del empleado)
-[ 🧠 Motor RAG & Gemini 3.5 Flash Lite ] ──> Generación de respuesta con Streaming
-           │
-           ▼
-[ 💬 Interfaz Gradio ChatInterface ] ──> Experiencia de chat en tiempo real (HTTP)
+                                 [ 💬 Consulta del Usuario ]
+                                             │
+                                             ▼
+                               [ 🧠 Agente LangGraph (Gemini) ]
+                                      │              │
+                   ┌──────────────────┘              └──────────────────┐
+                   ▼                                                    ▼
+   [ 📄 Herramienta Texto RAG ]                         [ 📊 Herramienta Tabular Pandas ]
+   - Archivos: .pdf, .docx, .md, .txt                   - Archivos: .csv, .xlsx, .xls
+   - Embeddings: MiniLM (Local)                         - Esquema: Inspección dinámica de columnas
+   - Base Vectorial: FAISS                              - Ejecución: Código Pandas dinámico
+                   │                                                    │
+                   └──────────────────┐              ┌──────────────────┘
+                                      ▼              ▼
+                                [ 💬 Respuesta en Streaming ]
+                                (Gradio ChatInterface - Port 7860)
 ```
 
 ### 🛠️ Componentes Clave:
 
-1. **📄 Extractor de Texto Multiformato:** Procesa automáticamente archivos `.md`, `.txt`, `.pdf`, `.docx`, `.doc` y `.csv`, convirtiendo registros tabulares y documentos en texto formateado para indización.
-2. **🧩 Segmentación Eficiente por Bloques:** Fragmenta el contenido en bloques contextuales optimizados para maximizar la calidad de recuperación vectorial sin saturación.
-3. **💻 Embeddings Locales Multilingües:** Emplea `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` para vectorizar e indizar localmente la información en español.
-4. **⚡ Indización con FAISS:** Almacena los vectores en un índice `faiss.IndexFlatL2` en memoria para búsquedas semánticas e híbridas inmediatas.
-5. **🧠 LLM con Streaming (Google Gemini API):** Emplea `gemini-3.5-flash-lite` para generar respuestas precisas, amables y formateadas en tiempo real mediante transmisión streaming en `Gradio ChatInterface`.
+1. **🧠 Orquestador LangGraph (`create_react_agent`):** Utiliza `gemini-3.5-flash-lite` vía `langchain-google-genai` para razonar sobre qué herramienta invocar según la pregunta del usuario.
+2. **📊 Ejecutor Dinámico de Código Pandas (`ejecutar_analisis_pandas`):** Permite al modelo consultar, filtrar, agrupar o calcular estadísticas sobre cualquier archivo CSV o libro de Excel (`.xlsx`, `.xls`) cargado en `datos/`, sin importar el esquema o nombres de columnas.
+3. **📄 Buscador Semántico FAISS (`consultar_documentos_texto`):** Procesa archivos de texto no estructurado vectorizando localmente en CPU con `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`.
+4. **💬 Interfaz Gradio Streaming:** Servidor web interactivo desplegado en `http://127.0.0.1:7860`.
 
 ---
 
@@ -61,13 +60,13 @@ El sistema está construido siguiendo una arquitectura por capas modular, local 
    ```
 
 3. **Documentos de la empresa:**
-   Coloca la documentación interna en la carpeta `datos/` (esta carpeta está excluida del control de versiones).
+   Coloca tus documentos (`.md`, `.pdf`, `.docx`, `.doc`, `.txt`, `.csv`, `.xlsx`, `.xls`) en la carpeta `datos/`.
 
 ---
 
 ## 🚀 Ejecución
 
-Lanza la aplicación ejecutando:
+Lanza el agente ejecutando:
 
 ```bash
 uv run python app.py
@@ -79,17 +78,8 @@ La interfaz web estará disponible en `http://127.0.0.1:7860`.
 
 ## ❓ Preguntas Frecuentes (FAQ)
 
-### 📄 ¿Qué tipos de archivos puedo agregar a la carpeta `datos/`?
-El sistema admite archivos `.md`, `.txt`, `.pdf`, `.docx`, `.doc` y `.csv`.
+### 📊 ¿Cómo maneja el agente los archivos CSV y Excel?
+LangGraph identifica los archivos tabulares cargados en `datos/`, inspecciona sus nombres de columnas y genera expresiones de Pandas en tiempo real para obtener filtrados, conteos o búsquedas exactas.
 
-### 🔑 ¿Es obligatorio configurar `HF_TOKEN`?
-No, es totalmente opcional. El modelo `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` es de libre acceso y se descarga automáticamente sin necesidad de autenticación.
-
-### 🔄 ¿Cómo agrego nuevos documentos a la base de conocimientos?
-Simplemente copia los nuevos archivos dentro de la carpeta `datos/` y vuelve a ejecutar `uv run python app.py`. El sistema indizará automáticamente los nuevos contenidos localmente al iniciar.
-
-### 💾 ¿Cómo funciona el almacenamiento de datos en la aplicación?
-La indización y búsqueda vectorial se realizan de forma 100% local con `SentenceTransformer` y `FAISS`. La API de Gemini se utiliza únicamente para generar la respuesta final en streaming al usuario.
-
-### 🎯 ¿Se envían los documentos completos al modelo de lenguaje?
-No. Únicamente se envían los 3 fragmentos (*chunks*) más relevantes recuperados por la búsqueda híbrida, lo que optimiza el consumo de tokens y garantiza respuestas rápidas.
+### 📄 ¿Qué ocurre con los archivos de texto (PDF, DOCX, MD)?
+Se fragmentan (*chunking*) e indizan localmente en memoria utilizando `FAISS` y `SentenceTransformer`, permitiendo búsquedas semánticas eficientes para responder preguntas sobre políticas corporativas.
