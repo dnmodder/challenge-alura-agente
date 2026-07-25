@@ -1,38 +1,38 @@
-# 🤖 Challenge Agente Alura (LangGraph Edition)
+# 🤖 Challenge Agente Alura
 
-Un agente de inteligencia artificial avanzado basado en **LangGraph** y **LangChain** diseñado para responder consultas corporativas combinando **recuperación RAG para documentos no estructurados** (PDF, DOCX, MD, TXT) y **ejecución dinámica de código Pandas para datos estructurados** (CSV, XLSX, XLS).
+Un agente de inteligencia artificial avanzado diseñado para responder consultas corporativas combinando **recuperación RAG para documentos de texto** (PDF, DOCX, MD, TXT) y **ejecución dinámica de consultas para datos estructurados** (CSV, XLSX, XLS).
 
 ---
 
 ## 🏗️ Descripción de la Arquitectura
 
-El sistema utiliza un **Estado de Grafo (`StateGraph`)** en LangGraph que analiza la intención de la consulta y delega el procesamiento a la herramienta correspondiente:
+El sistema utiliza una arquitectura modular basada en grafos de decisión que analiza la intención de la consulta y delega el procesamiento al motor adecuado:
 
 ```
                                  [ 💬 Consulta del Usuario ]
                                              │
                                              ▼
-                               [ 🧠 Agente LangGraph (Gemini) ]
+                               [ 🧠 Agente de Información ]
                                       │              │
                    ┌──────────────────┘              └──────────────────┐
                    ▼                                                    ▼
-   [ 📄 Herramienta Texto RAG ]                         [ 📊 Herramienta Tabular Pandas ]
+   [ 📄 Herramienta de Documentos ]                    [ 📊 Herramienta de Datos Tabulares ]
    - Archivos: .pdf, .docx, .md, .txt                   - Archivos: .csv, .xlsx, .xls
-   - Embeddings: MiniLM (Local)                         - Esquema: Inspección dinámica de columnas
-   - Base Vectorial: FAISS                              - Ejecución: Código Pandas dinámico
+   - Embeddings: Modelo multilingüe local               - Inspección dinámica de columnas
+   - Base Vectorial: FAISS                              - Consultas y análisis con Pandas
                    │                                                    │
                    └──────────────────┐              ┌──────────────────┘
                                       ▼              ▼
                                 [ 💬 Respuesta en Streaming ]
-                                (Gradio ChatInterface - Port 7860)
+                                (Interfaz de Chat - Puerto 7860)
 ```
 
 ### 🛠️ Componentes Clave:
 
-1. **🧠 Orquestador LangGraph (`create_react_agent`):** Utiliza `gemini-3.5-flash-lite` vía `langchain-google-genai` para razonar sobre qué herramienta invocar según la pregunta del usuario.
-2. **📊 Ejecutor Dinámico de Código Pandas (`ejecutar_analisis_pandas`):** Permite al modelo consultar, filtrar, agrupar o calcular estadísticas sobre cualquier archivo CSV o libro de Excel (`.xlsx`, `.xls`) cargado en `datos/`, sin importar el esquema o nombres de columnas.
-3. **📄 Buscador Semántico FAISS (`consultar_documentos_texto`):** Procesa archivos de texto no estructurado vectorizando localmente en CPU con `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`.
-4. **💬 Interfaz Gradio Streaming:** Servidor web interactivo desplegado en `http://127.0.0.1:7860`.
+1. **🧠 Orquestador Inteligente:** Procesa y comprende la consulta del usuario para decidir si requiere consultar documentación normativa o realizar cálculos sobre tablas.
+2. **📊 Módulo de Análisis Tabular:** Permite al agente consultar, filtrar, agrupar o calcular estadísticas sobre cualquier archivo CSV o libro de Excel (`.xlsx`, `.xls`) presente en la base de conocimientos, adaptándose automáticamente a la estructura de las columnas.
+3. **📄 Buscador Semántico FAISS:** Fragmenta e indiza localmente la información de documentos de texto no estructurados para responder preguntas sobre normativas y políticas corporativas.
+4. **💬 Interfaz de Chat con Streaming:** Servidor web interactivo con transmisión de respuestas en tiempo real servido en `http://127.0.0.1:7860`.
 
 ---
 
@@ -79,7 +79,7 @@ La interfaz web estará disponible en `http://127.0.0.1:7860`.
 ## ❓ Preguntas Frecuentes (FAQ)
 
 ### 📊 ¿Cómo maneja el agente los archivos CSV y Excel?
-LangGraph identifica los archivos tabulares cargados en `datos/`, inspecciona sus nombres de columnas y genera expresiones de Pandas en tiempo real para obtener filtrados, conteos o búsquedas exactas.
+El agente identifica los archivos tabulares en la carpeta de datos, examina sus encabezados y ejecuta consultas dinámicas para entregar filtrados y búsquedas exactas.
 
 ### 📄 ¿Qué ocurre con los archivos de texto (PDF, DOCX, MD)?
-Se fragmentan (*chunking*) e indizan localmente en memoria utilizando `FAISS` y `SentenceTransformer`, permitiendo búsquedas semánticas eficientes para responder preguntas sobre políticas corporativas.
+Se fragmentan e indizan localmente en memoria utilizando vectores semánticos, permitiendo responder con precisión sobre políticas y procedimientos corporativos.
