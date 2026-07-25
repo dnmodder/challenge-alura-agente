@@ -2,6 +2,12 @@
 
 Un agente de inteligencia artificial avanzado diseñado para responder consultas corporativas combinando **recuperación RAG para documentos de texto** (PDF, DOCX, MD, TXT) y **ejecución dinámica de consultas para datos estructurados** (CSV, XLSX, XLS).
 
+<p align="center">
+  <img src="capturas/captura-de-pantalla-1.jpeg" width="32%" alt="Captura 1" />
+  <img src="capturas/captura-de-pantalla-2.jpeg" width="32%" alt="Captura 2" />
+  <img src="capturas/captura-de-pantalla-3.jpeg" width="32%" alt="Captura 3" />
+</p>
+
 ---
 
 ## 🏗️ Descripción de la Arquitectura
@@ -41,7 +47,6 @@ El sistema utiliza una arquitectura modular basada en grafos de decisión que an
 * 🐍 **Python >= 3.10**
 * ⚡ **`uv` instalado**
 * 🔑 **Clave API de Google Gemini (`GEMINI_API_KEY`)**
-* 🔑 **Token de Hugging Face opcional (`HF_TOKEN`)**
 
 ---
 
@@ -56,7 +61,6 @@ El sistema utiliza una arquitectura modular basada en grafos de decisión que an
    Crea un archivo `.env` en la raíz del proyecto basándote en la plantilla `.env.example`:
    ```bash
    GEMINI_API_KEY=tu_clave_api_de_gemini_aqui
-   HF_TOKEN=tu_token_de_huggingface_opcional_aqui
    ```
 
 3. **Documentos de la empresa:**
