@@ -17,9 +17,9 @@ import numpy as np
 import pandas as pd
 import pypdf
 from dotenv import load_dotenv
+from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.prebuilt import create_react_agent
 from sentence_transformers import SentenceTransformer
 
 load_dotenv()
@@ -71,7 +71,6 @@ def extraer_texto_de_archivo(archivo: Path) -> str:
 
 
 def cargar_tablas(directorio_datos: Path = Path("datos")) -> None:
-    global DATAFRAMES_DISPONIBLES
     DATAFRAMES_DISPONIBLES.clear()
 
     if not directorio_datos.exists():
@@ -97,7 +96,12 @@ def cargar_tablas(directorio_datos: Path = Path("datos")) -> None:
                 print(
                     f"📊 Tabla CSV cargada: '{nombre_clave}' ({len(df)} filas, {len(df.columns)} columnas)"
                 )
-            except Exception as error:
+            except (
+                OSError,
+                ValueError,
+                RuntimeError,
+                pd.errors.EmptyDataError,
+            ) as error:
                 print(f"⚠️ Error al cargar CSV {archivo.name}: {error}")
 
         elif ext in {".xlsx", ".xls"}:
@@ -113,7 +117,12 @@ def cargar_tablas(directorio_datos: Path = Path("datos")) -> None:
                         print(
                             f"📊 Hoja Excel cargada: '{nombre_clave}' ({len(df_limpio)} filas, {len(df_limpio.columns)} columnas)"
                         )
-            except Exception as error:
+            except (
+                OSError,
+                ValueError,
+                RuntimeError,
+                pd.errors.EmptyDataError,
+            ) as error:
                 print(f"⚠️ Error al cargar Excel {archivo.name}: {error}")
 
 
@@ -134,7 +143,7 @@ def cargar_documentos_texto(
                     documentos.append(
                         Documento(ruta_archivo=archivo, contenido=contenido)
                     )
-            except Exception as error:
+            except (OSError, ValueError, RuntimeError) as error:
                 print(f"⚠️ Error al leer documento de texto {archivo.name}: {error}")
 
     return documentos
@@ -276,7 +285,6 @@ def consultar_documentos_texto(consulta: str) -> str:
     """Consulta la base de conocimientos RAG sobre documentos de texto (PDF, DOCX, MD, TXT).
     Úsalo cuando el usuario pregunte sobre políticas, reglamentos, guías o procedimientos.
     """
-    global BUSCADOR_FAISS
     if BUSCADOR_FAISS is None:
         return "No hay base de conocimientos de texto inicializada."
 
@@ -333,7 +341,7 @@ def ejecutar_analisis_pandas(codigo_python: str) -> str:
     stdout_original = sys.stdout
     try:
         sys.stdout = buffer_stdout
-        exec(codigo_python, globals_scope, locals_scope)
+        exec(codigo_python, globals_scope, locals_scope)  # noqa: S102
         salida_print = buffer_stdout.getvalue().strip()
 
         resultado_var = locals_scope.get("resultado") or globals_scope.get("resultado")
@@ -351,7 +359,7 @@ def ejecutar_analisis_pandas(codigo_python: str) -> str:
             return "\n\n".join(partes_resultado)
         return "El código se ejecutó correctamente sin salida."
 
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         return f"⚠️ Error al ejecutar código Pandas: {error}"
     finally:
         sys.stdout = stdout_original
@@ -389,7 +397,6 @@ class AgenteLangGraph:
         self.llm = ChatGoogleGenerativeAI(
             model=MODELO_LLM,
             google_api_key=CLAVE_API,
-            temperature=0.2,
             streaming=True,
         )
 
@@ -410,10 +417,10 @@ Instrucciones de Uso de Herramientas:
 3. Responde siempre de forma clara, amable, estructurada y en español basándote en los datos obtenidos por las herramientas.
 """
 
-        self.grafo = create_react_agent(
+        self.grafo = create_agent(
             model=self.llm,
             tools=herramientas,
-            prompt=prompt_sistema,
+            system_prompt=prompt_sistema,
         )
 
     def generar_respuesta_stream(
@@ -431,10 +438,10 @@ Instrucciones de Uso de Herramientas:
 
         texto_acumulado = ""
         for event in self.grafo.stream({"messages": mensajes_input}):
-            if isinstance(event, dict) and "agent" in event:
-                nodo_agent = event["agent"]
-                if "messages" in nodo_agent and nodo_agent["messages"]:
-                    ultimo_msg = nodo_agent["messages"][-1]
+            if isinstance(event, dict):
+                nodo = event.get("model") or event.get("agent")
+                if isinstance(nodo, dict) and "messages" in nodo and nodo["messages"]:
+                    ultimo_msg = nodo["messages"][-1]
                     if hasattr(ultimo_msg, "content") and ultimo_msg.content:
                         texto = extraer_texto_de_mensaje(ultimo_msg.content)
                         if texto:
@@ -458,8 +465,8 @@ def responder_gradio(
 def construir_interfaz() -> gr.Blocks:
     demo = gr.ChatInterface(
         fn=responder_gradio,
-        title="💼 Agente de Información Empresarial (LangGraph + RAG + Pandas)",
-        description="Asistente corporativo con razonamiento LangGraph: RAG para documentos de texto y ejecución dinámica de código Pandas para hojas CSV/Excel.",
+        title="Agente de Información Empresarial",
+        description="Asistente corporativo diseñado para responder consultas de empleados sobre políticas internas, procedimientos de la empresa y datos de archivos de trabajo.",
     )
     return demo
 
