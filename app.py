@@ -17,18 +17,18 @@ import numpy as np
 import pandas as pd
 import pypdf
 from dotenv import load_dotenv
+from google import genai
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
-from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
 CLAVE_API = os.getenv("GEMINI_API_KEY")
-TOKEN_HF = os.getenv("HF_TOKEN")
-MODELO_EMBEDDING_LOCAL = "intfloat/multilingual-e5-small"
 MODELO_LLM = "gemini-3.5-flash-lite"
+MODELO_EMBEDDING_API = "gemini-embedding-001"
 TOP_K = 3
+
 
 # Almacenamiento global de DataFrames cargados desde datos/
 DATAFRAMES_DISPONIBLES: dict[str, pd.DataFrame] = {}
@@ -200,36 +200,37 @@ def crear_chunks(documentos: list[Documento]) -> list[Chunk]:
 
 class BuscadorVectorialFAISS:
     def __init__(self) -> None:
-        print(f"🧠 Cargando modelo de embeddings '{MODELO_EMBEDDING_LOCAL}'...")
-        token_hf = TOKEN_HF if TOKEN_HF else None
-        self.modelo_embedding = SentenceTransformer(
-            MODELO_EMBEDDING_LOCAL,
-            token=token_hf,
-        )
+        print("🧠 Inicializando motor de embeddings con Gemini API (0 MB RAM local)...")
+        self.client_genai = genai.Client(api_key=CLAVE_API)
         self.chunks: list[Chunk] = []
         self.indice_faiss: faiss.IndexFlatL2 | None = None
-        self.dimension = self.modelo_embedding.get_embedding_dimension()
+        self.dimension = 3072
 
     def obtener_embedding(self, texto: str) -> np.ndarray:
-        vector = self.modelo_embedding.encode(
-            texto, convert_to_numpy=True, normalize_embeddings=True
+        response = self.client_genai.models.embed_content(
+            model=MODELO_EMBEDDING_API,
+            contents=texto,
         )
-        return np.array(vector, dtype=np.float32)
+        vector = response.embeddings[0].values
+        arr = np.array(vector, dtype=np.float32)
+        faiss.normalize_L2(arr.reshape(1, -1))
+        return arr
 
     def indexar_chunks(self, lista_chunks: list[Chunk]) -> None:
         if not lista_chunks:
             return
         self.chunks = lista_chunks
 
-        print(f"⚡ Indizando {len(lista_chunks)} fragmentos de texto en FAISS...")
+        print(
+            f"⚡ Indizando {len(lista_chunks)} fragmentos de texto en FAISS vía Gemini API..."
+        )
         textos = [chk.contenido for chk in lista_chunks]
-        matriz_embeddings = self.modelo_embedding.encode(
-            textos,
-            batch_size=32,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        ).astype(np.float32)
+        response = self.client_genai.models.embed_content(
+            model=MODELO_EMBEDDING_API,
+            contents=textos,
+        )
+        embeddings_list = [emb.values for emb in response.embeddings]
+        matriz_embeddings = np.array(embeddings_list, dtype=np.float32)
 
         faiss.normalize_L2(matriz_embeddings)
 
