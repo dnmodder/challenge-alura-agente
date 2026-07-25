@@ -2,10 +2,35 @@
 
 Un agente de inteligencia artificial avanzado diseñado para responder consultas corporativas combinando **recuperación RAG para documentos de texto** (PDF, DOCX, MD, TXT) y **ejecución dinámica de consultas para datos estructurados** (CSV, XLSX, XLS).
 
+---
+
+## 💡 Ejemplos de Preguntas que el Agente puede Responder
+
+### 📄 Consultas sobre Documentación Técnica y Manuales:
+* *"¿Cuáles son los tres pilares filosóficos de la Guía Oficial de Ingeniería Front-end de Santo Pegasus Soluciones?"*
+* *"¿Por qué la plataforma Agendio migró de un monolito a una arquitectura de microservicios?"*
+* *"¿Cuáles son los pasos del protocolo de respuesta a incidentes y clasificación de post-mortems en SRE?"*
+
+---
+
+## 💬 Ejemplos de Respuestas Generadas por el Agente
+
+> **Pregunta:** *"¿Cuáles son los pilares del front-end en la empresa?"*
+>
+> **Respuesta del Agente:**
+> Según la **Guía Oficial de Ingeniería Front-end de Santo Pegasus Soluciones**, los tres pilares filosóficos son:
+> 1. **Experiencia del Usuario como Métrica Técnica:** La performance percibida por el usuario final (medida a través de *Web Vitals*) es un criterio de aceptación técnica obligatorio.
+> 2. **Componentes como Contratos:** Cada componente expone props cuidadosamente diseñadas como interfaz pública, siendo predecible, reutilizable y testeable.
+> 3. **Seguridad en la Capa de Presentación:** El front-end no es un entorno confiable; todo dato proveniente del servidor o introducido por el usuario es validado y saneado.
+
+---
+
+### 📸 Capturas de la Interfaz Interactiva
+
 <p align="center">
-  <img src="capturas/captura-de-pantalla-1.jpeg" width="32%" alt="Captura 1" />
-  <img src="capturas/captura-de-pantalla-2.jpeg" width="32%" alt="Captura 2" />
-  <img src="capturas/captura-de-pantalla-3.jpeg" width="32%" alt="Captura 3" />
+  <img src="capturas/captura-de-pantalla-1.jpeg" width="32%" alt="Captura 1 - Interfaz del Agente" />
+  <img src="capturas/captura-de-pantalla-2.jpeg" width="32%" alt="Captura 2 - Consulta de Documentos" />
+  <img src="capturas/captura-de-pantalla-3.jpeg" width="32%" alt="Captura 3 - Interacción Corporativa" />
 </p>
 
 ---

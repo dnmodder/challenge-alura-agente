@@ -91,9 +91,6 @@ def cargar_tablas(directorio_datos: Path = Path("datos")) -> None:
                 )
                 nombre_clave = archivo.stem.replace(" ", "_")
                 DATAFRAMES_DISPONIBLES[nombre_clave] = df
-                print(
-                    f"📊 Tabla CSV cargada: '{nombre_clave}' ({len(df)} filas, {len(df.columns)} columnas)"
-                )
             except (
                 OSError,
                 ValueError,
@@ -112,9 +109,6 @@ def cargar_tablas(directorio_datos: Path = Path("datos")) -> None:
                     if not df_limpio.empty:
                         nombre_clave = f"{archivo.stem}_{nombre_hoja}".replace(" ", "_")
                         DATAFRAMES_DISPONIBLES[nombre_clave] = df_limpio
-                        print(
-                            f"📊 Hoja Excel cargada: '{nombre_clave}' ({len(df_limpio)} filas, {len(df_limpio.columns)} columnas)"
-                        )
             except (
                 OSError,
                 ValueError,
@@ -210,7 +204,6 @@ class BuscadorVectorialFAISS:
         arr = np.array(vector, dtype=np.float32)
         faiss.normalize_L2(arr.reshape(1, -1))
         return arr
-
 
     def indexar_chunks(self, lista_chunks: list[Chunk]) -> None:
         if not lista_chunks:
