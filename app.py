@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import io
 import os
 import re
@@ -17,7 +15,7 @@ import numpy as np
 import pandas as pd
 import pypdf
 from dotenv import load_dotenv
-from google import genai
+from fastembed import TextEmbedding
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -26,7 +24,7 @@ load_dotenv()
 
 CLAVE_API = os.getenv("GEMINI_API_KEY")
 MODELO_LLM = "gemini-3.5-flash-lite"
-MODELO_EMBEDDING_API = "gemini-embedding-001"
+MODELO_EMBEDDING_ONNX = "sentence-transformers/all-MiniLM-L6-v2"
 TOP_K = 3
 
 
@@ -200,21 +198,19 @@ def crear_chunks(documentos: list[Documento]) -> list[Chunk]:
 
 class BuscadorVectorialFAISS:
     def __init__(self) -> None:
-        print("🧠 Inicializando motor de embeddings con Gemini API (0 MB RAM local)...")
-        self.client_genai = genai.Client(api_key=CLAVE_API)
+        print("🧠 Inicializando motor de embeddings ONNX (fastembed)...")
+        self.modelo_embedding = TextEmbedding(MODELO_EMBEDDING_ONNX)
         self.chunks: list[Chunk] = []
         self.indice_faiss: faiss.IndexFlatL2 | None = None
-        self.dimension = 3072
+        self.dimension = 384
 
     def obtener_embedding(self, texto: str) -> np.ndarray:
-        response = self.client_genai.models.embed_content(
-            model=MODELO_EMBEDDING_API,
-            contents=texto,
-        )
-        vector = response.embeddings[0].values
+        generator = self.modelo_embedding.embed([texto])
+        vector = next(iter(generator))
         arr = np.array(vector, dtype=np.float32)
         faiss.normalize_L2(arr.reshape(1, -1))
         return arr
+
 
     def indexar_chunks(self, lista_chunks: list[Chunk]) -> None:
         if not lista_chunks:
@@ -222,14 +218,11 @@ class BuscadorVectorialFAISS:
         self.chunks = lista_chunks
 
         print(
-            f"⚡ Indizando {len(lista_chunks)} fragmentos de texto en FAISS vía Gemini API..."
+            f"⚡ Indizando {len(lista_chunks)} fragmentos de texto en FAISS con ONNX..."
         )
         textos = [chk.contenido for chk in lista_chunks]
-        response = self.client_genai.models.embed_content(
-            model=MODELO_EMBEDDING_API,
-            contents=textos,
-        )
-        embeddings_list = [emb.values for emb in response.embeddings]
+        generator = self.modelo_embedding.embed(textos)
+        embeddings_list = list(generator)
         matriz_embeddings = np.array(embeddings_list, dtype=np.float32)
 
         faiss.normalize_L2(matriz_embeddings)
