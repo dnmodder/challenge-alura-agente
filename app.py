@@ -470,12 +470,16 @@ def construir_interfaz() -> gr.Blocks:
     return demo
 
 
+HOST = os.getenv("HOST", "0.0.0.0")
+PORT = int(os.getenv("PORT", "7860"))
+
+
 def main() -> None:
     global AGENTE_LANGGRAPH
     AGENTE_LANGGRAPH = AgenteLangGraph()
     demo = construir_interfaz()
-    print("🌐 Lanzando servidor web Gradio en http://127.0.0.1:7860 ...")
-    demo.launch(server_name="127.0.0.1", server_port=7860)
+    print(f"🌐 Lanzando servidor web Gradio disponible en http://{HOST}:{PORT} ...")
+    demo.launch(server_name=HOST, server_port=PORT)
 
 
 if __name__ == "__main__":
