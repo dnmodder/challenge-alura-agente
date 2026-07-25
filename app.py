@@ -200,9 +200,7 @@ def crear_chunks(documentos: list[Documento]) -> list[Chunk]:
 
 class BuscadorVectorialFAISS:
     def __init__(self) -> None:
-        print(
-            "🧠 Cargando modelo de embeddings 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'..."
-        )
+        print(f"🧠 Cargando modelo de embeddings '{MODELO_EMBEDDING_LOCAL}'...")
         token_hf = TOKEN_HF if TOKEN_HF else None
         self.modelo_embedding = SentenceTransformer(
             MODELO_EMBEDDING_LOCAL,
