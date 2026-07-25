@@ -1,11 +1,11 @@
 import io
 import os
-import re
 import sys
 import unicodedata
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
+from sqlite3 import connect
 from typing import Any
 
 import docx
@@ -190,28 +190,40 @@ def crear_chunks(documentos: list[Documento]) -> list[Chunk]:
     return chunks
 
 
+RUTA_DB_SQLITE = Path("indice_conocimiento.db")
+RUTA_FAISS_INDEX = Path("indice_faiss.index")
+
+
 class BuscadorVectorialFAISS:
     def __init__(self) -> None:
-        print("🧠 Inicializando motor de embeddings ONNX (fastembed)...")
+        print(
+            "🧠 Inicializando motor de conocimientos RAG en disco (SQLite + FAISS)..."
+        )
         self.modelo_embedding = TextEmbedding(MODELO_EMBEDDING_ONNX)
-        self.chunks: list[Chunk] = []
         self.indice_faiss: faiss.IndexFlatL2 | None = None
         self.dimension = 384
+        self.inicializar_db()
 
-    def obtener_embedding(self, texto: str) -> np.ndarray:
-        generator = self.modelo_embedding.embed([texto])
-        vector = next(iter(generator))
-        arr = np.array(vector, dtype=np.float32)
-        faiss.normalize_L2(arr.reshape(1, -1))
-        return arr
+    def inicializar_db(self) -> None:
+        with connect(RUTA_DB_SQLITE) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chunks (
+                    id INTEGER PRIMARY KEY,
+                    id_documento TEXT,
+                    indice INTEGER,
+                    contenido TEXT
+                )
+                """
+            )
+            conn.commit()
 
     def indexar_chunks(self, lista_chunks: list[Chunk]) -> None:
         if not lista_chunks:
             return
-        self.chunks = lista_chunks
 
         print(
-            f"⚡ Indizando {len(lista_chunks)} fragmentos de texto en FAISS con ONNX..."
+            f"⚡ Indizando y guardando {len(lista_chunks)} fragmentos de texto en disco..."
         )
         textos = [chk.contenido for chk in lista_chunks]
         generator = self.modelo_embedding.embed(textos)
@@ -223,42 +235,66 @@ class BuscadorVectorialFAISS:
         self.dimension = matriz_embeddings.shape[1]
         self.indice_faiss = faiss.IndexFlatL2(self.dimension)
         self.indice_faiss.add(matriz_embeddings)
-        print("✅ Base vectorial FAISS indizada con éxito.")
+
+        faiss.write_index(self.indice_faiss, str(RUTA_FAISS_INDEX))
+
+        with connect(RUTA_DB_SQLITE) as conn:
+            conn.execute("DELETE FROM chunks")
+            conn.executemany(
+                "INSERT INTO chunks (id, id_documento, indice, contenido) VALUES (?, ?, ?, ?)",
+                [
+                    (i, chk.id_documento, chk.indice, chk.contenido)
+                    for i, chk in enumerate(lista_chunks)
+                ],
+            )
+            conn.commit()
+
+        print("✅ Base RAG e índice FAISS guardados en disco con éxito.")
+
+    def cargar_desde_disco(self) -> bool:
+        if RUTA_FAISS_INDEX.exists() and RUTA_DB_SQLITE.exists():
+            try:
+                self.indice_faiss = faiss.read_index(str(RUTA_FAISS_INDEX))
+                print(
+                    f"✅ Índice FAISS cargado desde disco ({self.indice_faiss.ntotal} vectores)."
+                )
+                return True
+            except (OSError, RuntimeError):
+                return False
+        return False
 
     def buscar_similares(self, consulta: str, top_k: int = TOP_K) -> list[Chunk]:
-        if self.indice_faiss is None or len(self.chunks) == 0:
+        if (
+            self.indice_faiss is None or self.indice_faiss.ntotal == 0
+        ) and not self.cargar_desde_disco():
             return []
 
-        vector_consulta = self.obtener_embedding(consulta).reshape(1, -1)
-        faiss.normalize_L2(vector_consulta)
-        _, indices = self.indice_faiss.search(vector_consulta, top_k * 3)
+        generator = self.modelo_embedding.embed([consulta])
+        vector = next(iter(generator))
+        arr = np.array(vector, dtype=np.float32).reshape(1, -1)
+        faiss.normalize_L2(arr)
 
-        resultados_vectoriales: list[Chunk] = []
-        for i in indices[0]:
-            if 0 <= i < len(self.chunks):
-                resultados_vectoriales.append(self.chunks[i])
+        if self.indice_faiss is None:
+            return []
 
-        palabras_clave = [normalizar_texto(p) for p in consulta.split() if len(p) >= 3]
-        coincidencias_exactas: list[Chunk] = []
+        _, indices = self.indice_faiss.search(arr, top_k * 3)
 
-        if palabras_clave:
-            for chk in self.chunks:
-                contenido_norm = normalizar_texto(chk.contenido)
-                matches = 0
-                for p in palabras_clave:
-                    pattern = r"\b" + re.escape(p)
-                    if re.search(pattern, contenido_norm):
-                        matches += 1
+        ids_encontrados = [int(i) for i in indices[0] if i >= 0]
+        if not ids_encontrados:
+            return []
 
-                if (
-                    matches == len(palabras_clave)
-                    and chk not in coincidencias_exactas
-                    and chk not in resultados_vectoriales
-                ):
-                    coincidencias_exactas.append(chk)
+        resultados: list[Chunk] = []
+        with connect(RUTA_DB_SQLITE) as conn:
+            placeholders = ",".join("?" * len(ids_encontrados))
+            query = f"SELECT id_documento, indice, contenido FROM chunks WHERE id IN ({placeholders})"
+            rows = conn.execute(query, ids_encontrados).fetchall()
 
-        combinados = coincidencias_exactas + resultados_vectoriales
-        return combinados[:top_k]
+            for row in rows:
+                resultados.append(
+                    Chunk(id_documento=row[0], indice=row[1], contenido=row[2])
+                )
+
+        return resultados[:top_k]
 
 
 # Instancia global del buscador FAISS
