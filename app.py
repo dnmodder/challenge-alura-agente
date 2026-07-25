@@ -26,7 +26,7 @@ load_dotenv()
 
 CLAVE_API = os.getenv("GEMINI_API_KEY")
 TOKEN_HF = os.getenv("HF_TOKEN")
-MODELO_EMBEDDING_LOCAL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+MODELO_EMBEDDING_LOCAL = "intfloat/multilingual-e5-small"
 MODELO_LLM = "gemini-3.5-flash-lite"
 TOP_K = 3
 
