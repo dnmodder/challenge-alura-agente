@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import io
 import os
 import re
+import sys
+import unicodedata
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import docx
 import faiss
@@ -13,8 +17,9 @@ import numpy as np
 import pandas as pd
 import pypdf
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from langchain.agents import create_agent
+from langchain_core.tools import tool
+from langchain_google_genai import ChatGoogleGenerativeAI
 from sentence_transformers import SentenceTransformer
 
 load_dotenv()
@@ -24,6 +29,9 @@ TOKEN_HF = os.getenv("HF_TOKEN")
 MODELO_EMBEDDING_LOCAL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 MODELO_LLM = "gemini-3.5-flash-lite"
 TOP_K = 3
+
+# Almacenamiento global de DataFrames cargados desde datos/
+DATAFRAMES_DISPONIBLES: dict[str, pd.DataFrame] = {}
 
 
 @dataclass
@@ -39,60 +47,9 @@ class Chunk:
     contenido: str
 
 
-def procesar_csv(archivo: Path) -> list[Chunk]:
-    chunks_csv: list[Chunk] = []
-    nombre_doc = archivo.stem.replace("_", " ").title()
-
-    try:
-        df = (
-            pd.read_csv(
-                archivo,
-                sep=None,
-                engine="python",
-                encoding="utf-8-sig",
-                on_bad_lines="skip",
-            )
-            .dropna(how="all", axis=0)
-            .dropna(how="all", axis=1)
-        )
-    except (OSError, ValueError, RuntimeError, pd.errors.EmptyDataError) as error:
-        print(f"⚠️ Error al leer el archivo CSV {archivo.name}: {error}")
-        return chunks_csv
-
-    tamanio_bloque_filas = 20
-    registros = df.to_dict(orient="records")
-    total_registros = len(registros)
-
-    for inicio in range(0, total_registros, tamanio_bloque_filas):
-        fin = min(inicio + tamanio_bloque_filas, total_registros)
-        sub_registros = registros[inicio:fin]
-
-        lineas_bloque = []
-        for reg in sub_registros:
-            detalles = ", ".join(
-                [
-                    f"{col}: {val}"
-                    for col, val in reg.items()
-                    if pd.notna(val) and str(val).strip() != ""
-                ]
-            )
-            if detalles:
-                lineas_bloque.append(f"• {detalles}")
-
-        if lineas_bloque:
-            contenido = (
-                f"[{nombre_doc} (Registros {inicio + 1}-{fin} de {total_registros})]\n"
-                + "\n".join(lineas_bloque)
-            )
-            chunks_csv.append(
-                Chunk(
-                    id_documento=archivo.name,
-                    indice=len(chunks_csv),
-                    contenido=contenido,
-                )
-            )
-
-    return chunks_csv
+def normalizar_texto(texto: str) -> str:
+    texto_nfkd = unicodedata.normalize("NFKD", texto)
+    return "".join([c for c in texto_nfkd if not unicodedata.combining(c)]).lower()
 
 
 def extraer_texto_de_archivo(archivo: Path) -> str:
@@ -113,28 +70,52 @@ def extraer_texto_de_archivo(archivo: Path) -> str:
     return ""
 
 
-def cargar_documentos(
-    directorio_datos: Path = Path("datos"),
-) -> tuple[list[Documento], list[Chunk]]:
-    documentos: list[Documento] = []
-    chunks_directos: list[Chunk] = []
+def cargar_tablas(directorio_datos: Path = Path("datos")) -> None:
+    DATAFRAMES_DISPONIBLES.clear()
 
     if not directorio_datos.exists():
-        return documentos, chunks_directos
+        return
 
-    extensiones_validas = {".md", ".txt", ".pdf", ".docx", ".doc", ".csv"}
     for archivo in directorio_datos.glob("*"):
         ext = archivo.suffix.lower()
-        if ext in extensiones_validas:
+        if ext == ".csv":
             try:
-                if ext == ".csv":
-                    chunks_csv = procesar_csv(archivo)
-                    chunks_directos.extend(chunks_csv)
-                else:
-                    contenido = extraer_texto_de_archivo(archivo)
-                    if contenido.strip():
-                        documentos.append(
-                            Documento(ruta_archivo=archivo, contenido=contenido)
+                df = (
+                    pd.read_csv(
+                        archivo,
+                        sep=None,
+                        engine="python",
+                        encoding="utf-8-sig",
+                        on_bad_lines="skip",
+                    )
+                    .dropna(how="all", axis=0)
+                    .dropna(how="all", axis=1)
+                )
+                nombre_clave = archivo.stem.replace(" ", "_")
+                DATAFRAMES_DISPONIBLES[nombre_clave] = df
+                print(
+                    f"📊 Tabla CSV cargada: '{nombre_clave}' ({len(df)} filas, {len(df.columns)} columnas)"
+                )
+            except (
+                OSError,
+                ValueError,
+                RuntimeError,
+                pd.errors.EmptyDataError,
+            ) as error:
+                print(f"⚠️ Error al cargar CSV {archivo.name}: {error}")
+
+        elif ext in {".xlsx", ".xls"}:
+            try:
+                hojas = pd.read_excel(str(archivo), sheet_name=None)
+                for nombre_hoja, df_hoja in hojas.items():
+                    df_limpio = df_hoja.dropna(how="all", axis=0).dropna(
+                        how="all", axis=1
+                    )
+                    if not df_limpio.empty:
+                        nombre_clave = f"{archivo.stem}_{nombre_hoja}".replace(" ", "_")
+                        DATAFRAMES_DISPONIBLES[nombre_clave] = df_limpio
+                        print(
+                            f"📊 Hoja Excel cargada: '{nombre_clave}' ({len(df_limpio)} filas, {len(df_limpio.columns)} columnas)"
                         )
             except (
                 OSError,
@@ -142,9 +123,30 @@ def cargar_documentos(
                 RuntimeError,
                 pd.errors.EmptyDataError,
             ) as error:
-                print(f"Error al leer el archivo {archivo.name}: {error}")
+                print(f"⚠️ Error al cargar Excel {archivo.name}: {error}")
 
-    return documentos, chunks_directos
+
+def cargar_documentos_texto(
+    directorio_datos: Path = Path("datos"),
+) -> list[Documento]:
+    documentos: list[Documento] = []
+    if not directorio_datos.exists():
+        return documentos
+
+    extensiones_validas = {".md", ".txt", ".pdf", ".docx", ".doc"}
+    for archivo in directorio_datos.glob("*"):
+        ext = archivo.suffix.lower()
+        if ext in extensiones_validas:
+            try:
+                contenido = extraer_texto_de_archivo(archivo)
+                if contenido.strip():
+                    documentos.append(
+                        Documento(ruta_archivo=archivo, contenido=contenido)
+                    )
+            except (OSError, ValueError, RuntimeError) as error:
+                print(f"⚠️ Error al leer documento de texto {archivo.name}: {error}")
+
+    return documentos
 
 
 def crear_chunks(documentos: list[Documento]) -> list[Chunk]:
@@ -196,15 +198,6 @@ def crear_chunks(documentos: list[Documento]) -> list[Chunk]:
     return chunks
 
 
-import unicodedata
-
-
-def normalizar_texto(texto: str) -> str:
-
-    texto_nfkd = unicodedata.normalize("NFKD", texto)
-    return "".join([c for c in texto_nfkd if not unicodedata.combining(c)]).lower()
-
-
 class BuscadorVectorialFAISS:
     def __init__(self) -> None:
         print(
@@ -230,16 +223,14 @@ class BuscadorVectorialFAISS:
             return
         self.chunks = lista_chunks
 
-        print(
-            f"⚡ Indizando {len(lista_chunks)} fragmentos de texto en la base vectorial FAISS..."
-        )
+        print(f"⚡ Indizando {len(lista_chunks)} fragmentos de texto en FAISS...")
         textos = [chk.contenido for chk in lista_chunks]
         matriz_embeddings = self.modelo_embedding.encode(
             textos,
             batch_size=32,
             convert_to_numpy=True,
             normalize_embeddings=True,
-            show_progress_bar=True,
+            show_progress_bar=False,
         ).astype(np.float32)
 
         faiss.normalize_L2(matriz_embeddings)
@@ -285,104 +276,204 @@ class BuscadorVectorialFAISS:
         return combinados[:top_k]
 
 
-class AgenteRAG:
+# Instancia global del buscador FAISS
+BUSCADOR_FAISS: BuscadorVectorialFAISS | None = None
+
+
+@tool
+def consultar_documentos_texto(consulta: str) -> str:
+    """Consulta la base de conocimientos RAG sobre documentos de texto (PDF, DOCX, MD, TXT).
+    Úsalo cuando el usuario pregunte sobre políticas, reglamentos, guías o procedimientos.
+    """
+    if BUSCADOR_FAISS is None:
+        return "No hay base de conocimientos de texto inicializada."
+
+    chunks_relacionados = BUSCADOR_FAISS.buscar_similares(consulta)
+    if not chunks_relacionados:
+        return "No se encontró información relevante en los documentos de texto."
+
+    return "\n\n---\n\n".join([c.contenido for c in chunks_relacionados])
+
+
+@tool
+def listar_tablas_y_columnas() -> str:
+    """Devuelve la lista de tablas/archivos tabulares disponibles (CSV, XLSX) con el nombre de sus columnas,
+    cantidad de filas y tipos de datos.
+    Úsalo ANTES de ejecutar código Pandas si necesitas conocer el esquema exacto de las tablas.
+    """
+    if not DATAFRAMES_DISPONIBLES:
+        return "No hay tablas o archivos tabulares disponibles en el sistema."
+
+    resumenes = []
+    for nombre, df in DATAFRAMES_DISPONIBLES.items():
+        cols = ", ".join(
+            [f"{col} ({dtype})" for col, dtype in zip(df.columns, df.dtypes)]
+        )
+        resumenes.append(
+            f"📌 Tabla: '{nombre}' | Filas: {len(df)} | Columnas:\n   {cols}"
+        )
+
+    return "\n\n".join(resumenes)
+
+
+@tool
+def ejecutar_analisis_pandas(codigo_python: str) -> str:
+    """Ejecuta código Python/Pandas para consultar, filtrar, agrupar o calcular estadísticas
+    sobre los DataFrames disponibles en el diccionario global `DATAFRAMES_DISPONIBLES`.
+
+    Instrucciones de código:
+    - Las tablas están en el diccionario `DATAFRAMES_DISPONIBLES`, por ejemplo: `df = DATAFRAMES_DISPONIBLES['Reporte_General_de_Asignaturas_Virtuales']`.
+    - Asigna el resultado final a una variable llamada `resultado` o imprímelo con `print()`.
+    - Puedes realizar operaciones como:
+      `df[df['Asignatura'].str.contains('Lenguaje', case=False, na=False)][['Clave', 'Asignatura', 'Nombre', 'Apellidos']]`
+    """
+    if not DATAFRAMES_DISPONIBLES:
+        return "No hay tablas cargadas en el sistema para analizar."
+
+    buffer_stdout = io.StringIO()
+    globals_scope = {
+        "pd": pd,
+        "np": np,
+        "DATAFRAMES_DISPONIBLES": DATAFRAMES_DISPONIBLES,
+    }
+    locals_scope: dict[str, Any] = {}
+
+    stdout_original = sys.stdout
+    try:
+        sys.stdout = buffer_stdout
+        exec(codigo_python, globals_scope, locals_scope)  # noqa: S102
+        salida_print = buffer_stdout.getvalue().strip()
+
+        resultado_var = locals_scope.get("resultado") or globals_scope.get("resultado")
+
+        partes_resultado = []
+        if salida_print:
+            partes_resultado.append(salida_print)
+        if resultado_var is not None:
+            if isinstance(resultado_var, (pd.DataFrame, pd.Series)):
+                partes_resultado.append(resultado_var.to_string())
+            else:
+                partes_resultado.append(str(resultado_var))
+
+        if partes_resultado:
+            return "\n\n".join(partes_resultado)
+        return "El código se ejecutó correctamente sin salida."
+
+    except Exception as error:  # noqa: BLE001
+        return f"⚠️ Error al ejecutar código Pandas: {error}"
+    finally:
+        sys.stdout = stdout_original
+
+
+def extraer_texto_de_mensaje(contenido: Any) -> str:
+    if isinstance(contenido, str):
+        return contenido
+    if isinstance(contenido, list):
+        textos = []
+        for elem in contenido:
+            if isinstance(elem, dict) and elem.get("type") == "text":
+                textos.append(str(elem.get("text", "")))
+            elif isinstance(elem, str):
+                textos.append(elem)
+        return "".join(textos)
+    return str(contenido) if contenido is not None else ""
+
+
+class AgenteLangGraph:
     def __init__(self) -> None:
         if not CLAVE_API:
-            raise ValueError(
-                "No se encontró la variable GEMINI_API_KEY en el archivo .env"
-            )
-        self.cliente = genai.Client(api_key=CLAVE_API)
-        self.buscador = BuscadorVectorialFAISS()
-        self.inicializar_conocimientos()
+            raise ValueError("No se encontró GEMINI_API_KEY en el archivo .env")
 
-    def inicializar_conocimientos(self) -> None:
-        docs, chunks_csv = cargar_documentos()
-        chunks = crear_chunks(docs) + chunks_csv
-        self.buscador.indexar_chunks(chunks)
+        print("🚀 Inicializando Agente LangGraph con Gemini y Herramientas...")
+        global BUSCADOR_FAISS
+
+        cargar_tablas()
+        docs_texto = cargar_documentos_texto()
+        chunks_texto = crear_chunks(docs_texto)
+
+        BUSCADOR_FAISS = BuscadorVectorialFAISS()
+        BUSCADOR_FAISS.indexar_chunks(chunks_texto)
+
+        self.llm = ChatGoogleGenerativeAI(
+            model=MODELO_LLM,
+            google_api_key=CLAVE_API,
+            streaming=True,
+        )
+
+        herramientas = [
+            consultar_documentos_texto,
+            listar_tablas_y_columnas,
+            ejecutar_analisis_pandas,
+        ]
+
+        prompt_sistema = """Eres el Agente de Información Empresarial interno impulsado por LangGraph.
+Tu función es ayudar a empleados y colaboradores a consultar tanto documentos normativos de texto como datos estructurados (tablas CSV, Excel).
+
+Instrucciones de Uso de Herramientas:
+1. Para preguntas sobre políticas, envíos, privacidad o normativas en texto, usa la herramienta `consultar_documentos_texto`.
+2. Para preguntas sobre asignaturas, profesores, listas, conteos o datos en tablas CSV/Excel:
+   - Si no conoces el nombre de la tabla o sus columnas, llama primero a `listar_tablas_y_columnas`.
+   - Luego, genera y ejecuta código Pandas preciso usando `ejecutar_analisis_pandas`.
+3. Responde siempre de forma clara, amable, estructurada y en español basándote en los datos obtenidos por las herramientas.
+"""
+
+        self.grafo = create_agent(
+            model=self.llm,
+            tools=herramientas,
+            system_prompt=prompt_sistema,
+        )
 
     def generar_respuesta_stream(
         self, mensaje_usuario: str, historial: list[dict[str, str]]
     ) -> Generator[str, None, None]:
-        chunks_relacionados = self.buscador.buscar_similares(mensaje_usuario)
-        contexto_recuperado = "\n\n---\n\n".join(
-            [c.contenido for c in chunks_relacionados]
-        )
-
-        prompt_sistema = f"""Eres el Agente de Información Empresarial interno.
-Responde de forma clara, directa, precisa y estructurada en español a los empleados y colaboradores usando ÚNICAMENTE el contexto de información provisto a continuación.
-
-Reglas obligatorias:
-- Si el mensaje es un saludo inicial y no hay historial previo, saluda cordialmente. Si ya hay mensajes previos en el historial, responde directamente sin repetir saludos redundantes.
-- No menciones nombres de archivos técnicos ni rutas internas de sistema.
-- Si la información no está presente en el contexto, indica amablemente que no dispones de esa información en los documentos empresariales.
-
-CONTEXTO DE INFORMACIÓN RECUPERADO:
-{contexto_recuperado}
-"""
-
-        mensajes_chat = []
+        mensajes_input = []
         for h in historial:
             if isinstance(h, dict):
-                rol = "user" if h.get("role") == "user" else "model"
+                rol = "user" if h.get("role") == "user" else "assistant"
                 contenido = h.get("content", "")
                 if contenido:
-                    mensajes_chat.append(
-                        types.Content(
-                            role=rol,
-                            parts=[types.Part.from_text(text=str(contenido))],
-                        )
-                    )
+                    mensajes_input.append((rol, str(contenido)))
 
-        mensajes_chat.append(
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=mensaje_usuario)],
-            )
-        )
-
-        configuracion = types.GenerateContentConfig(
-            system_instruction=prompt_sistema,
-            temperature=0.2,
-        )
-
-        respuesta_stream = self.cliente.models.generate_content_stream(
-            model=MODELO_LLM,
-            contents=mensajes_chat,
-            config=configuracion,
-        )
+        mensajes_input.append(("user", mensaje_usuario))
 
         texto_acumulado = ""
-        for chunk in respuesta_stream:
-            if chunk.text:
-                texto_acumulado += chunk.text
-                yield texto_acumulado
+        for event in self.grafo.stream({"messages": mensajes_input}):
+            if isinstance(event, dict):
+                nodo = event.get("model") or event.get("agent")
+                if isinstance(nodo, dict) and "messages" in nodo and nodo["messages"]:
+                    ultimo_msg = nodo["messages"][-1]
+                    if hasattr(ultimo_msg, "content") and ultimo_msg.content:
+                        texto = extraer_texto_de_mensaje(ultimo_msg.content)
+                        if texto:
+                            texto_acumulado = texto
+                            yield texto_acumulado
+
+
+# Instancia global del agente
+AGENTE_LANGGRAPH: AgenteLangGraph | None = None
 
 
 def responder_gradio(
     mensaje: str, historial: list[dict[str, str]]
 ) -> Generator[str, None, None]:
-    global agente
-    if agente is None:
-        agente = AgenteRAG()
-    yield from agente.generar_respuesta_stream(mensaje, historial)
-
-
-agente: AgenteRAG | None = None
+    global AGENTE_LANGGRAPH
+    if AGENTE_LANGGRAPH is None:
+        AGENTE_LANGGRAPH = AgenteLangGraph()
+    yield from AGENTE_LANGGRAPH.generar_respuesta_stream(mensaje, historial)
 
 
 def construir_interfaz() -> gr.Blocks:
     demo = gr.ChatInterface(
         fn=responder_gradio,
-        title="💼 Agente de Información Empresarial",
-        description="Asistente inteligente interno para consultas sobre políticas, procedimientos y documentación corporativa.",
+        title="Agente de Información Empresarial",
+        description="Asistente corporativo diseñado para responder consultas de empleados sobre políticas internas, procedimientos de la empresa y datos de archivos de trabajo.",
     )
     return demo
 
 
 def main() -> None:
-    global agente
-    print("🚀 Inicializando Agente RAG de Información Empresarial...")
-    agente = AgenteRAG()
+    global AGENTE_LANGGRAPH
+    AGENTE_LANGGRAPH = AgenteLangGraph()
     demo = construir_interfaz()
     print("🌐 Lanzando servidor web Gradio en http://127.0.0.1:7860 ...")
     demo.launch(server_name="127.0.0.1", server_port=7860)
