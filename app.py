@@ -68,8 +68,58 @@ def extraer_texto_de_archivo(archivo: Path) -> str:
     return ""
 
 
+class DictDataFramesDisponibles(dict[str, pd.DataFrame]):
+    def __init__(self) -> None:
+        super().__init__()
+        self.rutas_tablas: dict[str, tuple[Path, str | None]] = {}
+        self.esquemas: dict[str, list[tuple[str, str]]] = {}
+
+    def registrar_tabla(
+        self,
+        nombre: str,
+        ruta: Path,
+        hoja: str | None,
+        esquema: list[tuple[str, str]],
+    ) -> None:
+        self.rutas_tablas[nombre] = (ruta, hoja)
+        self.esquemas[nombre] = esquema
+
+    def __getitem__(self, key: str) -> pd.DataFrame:
+        if dict.__contains__(self, key):
+            return super().__getitem__(key)
+
+        if key in self.rutas_tablas:
+            ruta, hoja = self.rutas_tablas[key]
+            if hoja is None:
+                df = (
+                    pd.read_csv(
+                        str(ruta),
+                        engine="python",
+                        encoding="utf-8-sig",
+                        on_bad_lines="skip",
+                    )
+                    .dropna(how="all", axis=0)
+                    .dropna(how="all", axis=1)
+                )
+            else:
+                df = (
+                    pd.read_excel(str(ruta), sheet_name=hoja)
+                    .dropna(how="all", axis=0)
+                    .dropna(how="all", axis=1)
+                )
+            self[key] = df
+            return df
+        raise KeyError(f"Tabla '{key}' no encontrada en el diccionario.")
+
+
+# Almacenamiento global perezoso de DataFrames cargados desde datos/
+DATAFRAMES_DISPONIBLES = DictDataFramesDisponibles()
+
+
 def cargar_tablas(directorio_datos: Path = Path("datos")) -> None:
     DATAFRAMES_DISPONIBLES.clear()
+    DATAFRAMES_DISPONIBLES.rutas_tablas.clear()
+    DATAFRAMES_DISPONIBLES.esquemas.clear()
 
     if not directorio_datos.exists():
         return
@@ -78,44 +128,50 @@ def cargar_tablas(directorio_datos: Path = Path("datos")) -> None:
         ext = archivo.suffix.lower()
         if ext == ".csv":
             try:
-                df = (
-                    pd.read_csv(
-                        archivo,
-                        sep=None,
-                        engine="python",
-                        encoding="utf-8-sig",
-                        on_bad_lines="skip",
-                    )
-                    .dropna(how="all", axis=0)
-                    .dropna(how="all", axis=1)
+                df_head = pd.read_csv(
+                    archivo,
+                    nrows=2,
+                    engine="python",
+                    encoding="utf-8-sig",
+                    on_bad_lines="skip",
                 )
                 nombre_clave = archivo.stem.replace(" ", "_")
-                DATAFRAMES_DISPONIBLES[nombre_clave] = df
+                esquema = [
+                    (col, str(dtype))
+                    for col, dtype in zip(df_head.columns, df_head.dtypes)
+                ]
+                DATAFRAMES_DISPONIBLES.registrar_tabla(
+                    nombre_clave, archivo, None, esquema
+                )
             except (
                 OSError,
                 ValueError,
                 RuntimeError,
                 pd.errors.EmptyDataError,
             ) as error:
-                print(f"⚠️ Error al cargar CSV {archivo.name}: {error}")
+                print(f"⚠️ Error al inspeccionar CSV {archivo.name}: {error}")
 
         elif ext in {".xlsx", ".xls"}:
             try:
-                hojas = pd.read_excel(str(archivo), sheet_name=None)
-                for nombre_hoja, df_hoja in hojas.items():
-                    df_limpio = df_hoja.dropna(how="all", axis=0).dropna(
-                        how="all", axis=1
-                    )
-                    if not df_limpio.empty:
+                excel_file = pd.ExcelFile(str(archivo))
+                for nombre_hoja in excel_file.sheet_names:
+                    df_head = pd.read_excel(excel_file, sheet_name=nombre_hoja, nrows=2)
+                    if not df_head.columns.empty:
                         nombre_clave = f"{archivo.stem}_{nombre_hoja}".replace(" ", "_")
-                        DATAFRAMES_DISPONIBLES[nombre_clave] = df_limpio
+                        esquema = [
+                            (col, str(dtype))
+                            for col, dtype in zip(df_head.columns, df_head.dtypes)
+                        ]
+                        DATAFRAMES_DISPONIBLES.registrar_tabla(
+                            nombre_clave, archivo, nombre_hoja, esquema
+                        )
             except (
                 OSError,
                 ValueError,
                 RuntimeError,
                 pd.errors.EmptyDataError,
             ) as error:
-                print(f"⚠️ Error al cargar Excel {archivo.name}: {error}")
+                print(f"⚠️ Error al inspeccionar Excel {archivo.name}: {error}")
 
 
 def cargar_documentos_texto(
@@ -233,8 +289,13 @@ class BuscadorVectorialFAISS:
         faiss.normalize_L2(matriz_embeddings)
 
         self.dimension = matriz_embeddings.shape[1]
-        self.indice_faiss = faiss.IndexFlatL2(self.dimension)
-        self.indice_faiss.add(matriz_embeddings)
+
+        indice_int8 = faiss.IndexScalarQuantizer(
+            self.dimension, faiss.ScalarQuantizer.QT_8bit, faiss.METRIC_L2
+        )
+        indice_int8.train(matriz_embeddings)
+        indice_int8.add(matriz_embeddings)
+        self.indice_faiss = indice_int8
 
         faiss.write_index(self.indice_faiss, str(RUTA_FAISS_INDEX))
 
@@ -318,21 +379,17 @@ def consultar_documentos_texto(consulta: str) -> str:
 
 @tool
 def listar_tablas_y_columnas() -> str:
-    """Devuelve la lista de tablas/archivos tabulares disponibles (CSV, XLSX) con el nombre de sus columnas,
-    cantidad de filas y tipos de datos.
+    """Devuelve la lista de tablas/archivos tabulares disponibles (CSV, XLSX) con el nombre de sus columnas
+    y tipos de datos.
     Úsalo ANTES de ejecutar código Pandas si necesitas conocer el esquema exacto de las tablas.
     """
-    if not DATAFRAMES_DISPONIBLES:
+    if not DATAFRAMES_DISPONIBLES.rutas_tablas:
         return "No hay tablas o archivos tabulares disponibles en el sistema."
 
     resumenes = []
-    for nombre, df in DATAFRAMES_DISPONIBLES.items():
-        cols = ", ".join(
-            [f"{col} ({dtype})" for col, dtype in zip(df.columns, df.dtypes)]
-        )
-        resumenes.append(
-            f"📌 Tabla: '{nombre}' | Filas: {len(df)} | Columnas:\n   {cols}"
-        )
+    for nombre, esquema in DATAFRAMES_DISPONIBLES.esquemas.items():
+        cols = ", ".join([f"{col} ({dtype})" for col, dtype in esquema])
+        resumenes.append(f"📌 Tabla: '{nombre}' | Columnas:\n   {cols}")
 
     return "\n\n".join(resumenes)
 
@@ -348,7 +405,7 @@ def ejecutar_analisis_pandas(codigo_python: str) -> str:
     - Puedes realizar operaciones como:
       `df[df['Asignatura'].str.contains('Lenguaje', case=False, na=False)][['Clave', 'Asignatura', 'Nombre', 'Apellidos']]`
     """
-    if not DATAFRAMES_DISPONIBLES:
+    if not DATAFRAMES_DISPONIBLES.rutas_tablas:
         return "No hay tablas cargadas en el sistema para analizar."
 
     buffer_stdout = io.StringIO()
@@ -405,15 +462,21 @@ class AgenteLangGraph:
         if not CLAVE_API:
             raise ValueError("No se encontró GEMINI_API_KEY en el archivo .env")
 
-        print("🚀 Inicializando Agente LangGraph con Gemini y Herramientas...")
+        print("🚀 Inicializando Agente LangGraph...")
         global BUSCADOR_FAISS
 
         cargar_tablas()
-        docs_texto = cargar_documentos_texto()
-        chunks_texto = crear_chunks(docs_texto)
-
         BUSCADOR_FAISS = BuscadorVectorialFAISS()
-        BUSCADOR_FAISS.indexar_chunks(chunks_texto)
+
+        if BUSCADOR_FAISS.cargar_desde_disco():
+            print(
+                "✅ Base RAG cargada instantáneamente desde disco (0 PDFs procesados en RAM)."
+            )
+        else:
+            print("📑 Primera ejecución o nuevo índice: procesando PDFs en datos/...")
+            documentos = cargar_documentos_texto()
+            chunks = crear_chunks(documentos)
+            BUSCADOR_FAISS.indexar_chunks(chunks)
 
         self.llm = ChatGoogleGenerativeAI(
             model=MODELO_LLM,
