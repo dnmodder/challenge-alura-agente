@@ -1,5 +1,7 @@
 # 🤖 Challenge Agente Alura
 
+> 🌐 **Despliegue en Vivo:** [http://206.189.184.31/](http://206.189.184.31/)
+
 Un agente de inteligencia artificial avanzado diseñado para responder consultas corporativas combinando **recuperación RAG para documentos de texto** (PDF, DOCX, MD, TXT) y **ejecución dinámica de consultas para datos estructurados** (CSV, XLSX, XLS).
 
 ---
@@ -55,7 +57,7 @@ El sistema utiliza una arquitectura modular basada en grafos de decisión que an
                    └──────────────────┐              ┌──────────────────┘
                                       ▼              ▼
                                 [ 💬 Respuesta en Streaming ]
-                                (Interfaz de Chat - Puerto 7860)
+                                (Interfaz de Chat - Puerto 7860 / HTTP 80)
 ```
 
 ### 🛠️ Componentes Clave:
@@ -101,7 +103,8 @@ Lanza el agente ejecutando:
 uv run python app.py
 ```
 
-La interfaz web estará disponible en `http://127.0.0.1:7860`.
+* **Local:** La interfaz web estará disponible en `http://127.0.0.1:7860`.
+* **Servidor VPS (Despliegue en Vivo):** [http://206.189.184.31/](http://206.189.184.31/)
 
 ---
 
